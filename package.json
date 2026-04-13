@@ -1,0 +1,29 @@
+{
+  "name": "codewiki",
+  "version": "0.1.0",
+  "description": "LLM-compiled knowledge base for coding agent patterns, served via MCP",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "fetch": "tsx src/pipeline/fetch.ts",
+    "filter": "tsx src/pipeline/filter.ts",
+    "compile": "tsx src/pipeline/compile.ts",
+    "serve": "tsx src/server/index.ts",
+    "validate": "tsx src/wiki/validate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "simple-git": "^3.27.0",
+    "zod": "^3.24.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}

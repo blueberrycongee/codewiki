@@ -1,18 +1,19 @@
 {
   "name": "codewiki",
   "version": "0.1.0",
-  "description": "LLM-compiled knowledge base for coding agent patterns, served via MCP",
+  "description": "LLM-compiled code knowledge base — five layers of knowledge per project",
   "type": "module",
+  "bin": {
+    "codewiki": "./dist/cli.js"
+  },
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "fetch": "tsx src/pipeline/fetch.ts",
-    "filter": "tsx src/pipeline/filter.ts",
-    "compile": "tsx src/pipeline/compile.ts",
+    "codewiki": "tsx src/cli.ts",
     "serve": "tsx src/server/index.ts",
-    "validate": "tsx src/wiki/validate.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

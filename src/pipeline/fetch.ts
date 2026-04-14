@@ -2,171 +2,212 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import simpleGit from "simple-git";
-import {
-  CACHE_DIR,
-  projects,
-  limits,
-  type ProjectId,
-  PROJECT_IDS,
-} from "../config.js";
-import type { CommitInfo, PRInfo, IssueInfo } from "../types.js";
+import type { Config, RepoConfig } from "../config/schema.js";
+import { repoSlug, repoFullName } from "../config/loader.js";
+import type { CommitInfo, PRInfo, IssueInfo, ClosedPR, PRReviewComment } from "../types.js";
 
 function ensureDir(dir: string) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-async function cloneOrPull(projectId: ProjectId) {
-  const project = projects[projectId];
-  const repoDir = path.join(CACHE_DIR, "repos", projectId);
+function ghCli(args: string): string {
+  try {
+    return execSync(`gh ${args}`, {
+      encoding: "utf-8",
+      timeout: 60_000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch {
+    return "[]";
+  }
+}
 
+async function cloneOrPull(repoUrl: string, repoDir: string): Promise<void> {
   if (fs.existsSync(path.join(repoDir, ".git"))) {
-    console.log(`[${projectId}] Pulling latest...`);
+    console.log("  Pulling latest...");
     const git = simpleGit(repoDir);
     await git.pull();
   } else {
-    console.log(`[${projectId}] Cloning ${project.repo}...`);
+    console.log("  Cloning...");
     ensureDir(path.dirname(repoDir));
-    const git = simpleGit();
-    await git.clone(`https://github.com/${project.repo}.git`, repoDir);
+    await simpleGit().clone(repoUrl, repoDir, ["--depth", "1000"]);
   }
-
-  return repoDir;
 }
 
 async function extractGitLog(
-  projectId: ProjectId,
   repoDir: string,
+  maxCommits: number,
 ): Promise<CommitInfo[]> {
-  console.log(`[${projectId}] Extracting git log...`);
   const git = simpleGit(repoDir);
-  const log = await git.log({
-    maxCount: limits.maxCommits,
-    "--stat": null,
-  });
+  const log = await git.log({ maxCount: maxCommits, "--stat": null });
 
-  const commits: CommitInfo[] = log.all.map((entry) => {
-    const statMatch = entry.diff;
+  return log.all.map((entry) => {
+    const stats = entry.diff;
     return {
       sha: entry.hash,
-      message: entry.message,
+      message: entry.message.split("\n")[0],
       author: entry.author_name,
       date: entry.date,
-      filesChanged: statMatch?.changed ?? 0,
-      insertions: statMatch?.insertions ?? 0,
-      deletions: statMatch?.deletions ?? 0,
+      filesChanged: stats?.changed ?? 0,
+      insertions: stats?.insertions ?? 0,
+      deletions: stats?.deletions ?? 0,
     };
   });
-
-  const outPath = path.join(CACHE_DIR, "git-logs", `${projectId}.json`);
-  ensureDir(path.dirname(outPath));
-  fs.writeFileSync(outPath, JSON.stringify(commits, null, 2));
-  console.log(`[${projectId}] Saved ${commits.length} commits to ${outPath}`);
-  return commits;
 }
 
-function fetchPRs(projectId: ProjectId): PRInfo[] {
-  console.log(`[${projectId}] Fetching merged PRs...`);
-  const project = projects[projectId];
-  const outDir = path.join(CACHE_DIR, "pr-data");
-  ensureDir(outDir);
+function fetchMergedPRs(fullName: string, maxPRs: number): PRInfo[] {
+  console.log("  Fetching merged PRs...");
+  const json = ghCli(
+    `pr list --repo ${fullName} --state merged --limit ${maxPRs} --json number,title,body,labels,mergedAt,additions,deletions,files`,
+  );
+  const prs = JSON.parse(json);
+  return prs.map((pr: any) => ({
+    number: pr.number,
+    title: pr.title,
+    body: (pr.body || "").slice(0, 1000),
+    labels: (pr.labels || []).map((l: any) => l.name || l),
+    mergedAt: pr.mergedAt,
+    additions: pr.additions || 0,
+    deletions: pr.deletions || 0,
+    files: (pr.files || []).map((f: any) => f.path || f),
+  }));
+}
 
-  try {
-    const raw = execSync(
-      `gh pr list --repo ${project.repo} --state merged --limit ${limits.maxPRs} --json number,title,body,labels,mergedAt,additions,deletions,files`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
-    const prs: PRInfo[] = JSON.parse(raw).map((pr: any) => ({
+function fetchClosedPRs(fullName: string): ClosedPR[] {
+  console.log("  Fetching closed (not merged) PRs...");
+  const json = ghCli(
+    `pr list --repo ${fullName} --state closed --limit 100 --json number,title,body,labels,createdAt,closedAt,mergedAt`,
+  );
+  const prs = JSON.parse(json);
+  return prs
+    .filter((pr: any) => !pr.mergedAt)
+    .map((pr: any) => ({
       number: pr.number,
       title: pr.title,
-      body: pr.body || "",
-      labels: (pr.labels || []).map((l: any) => l.name),
-      mergedAt: pr.mergedAt,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      files: (pr.files || []).map((f: any) => f.path),
+      body: (pr.body || "").slice(0, 500),
+      labels: (pr.labels || []).map((l: any) => l.name || l),
+      createdAt: pr.createdAt,
+      closedAt: pr.closedAt,
     }));
-
-    const outPath = path.join(outDir, `${projectId}.json`);
-    fs.writeFileSync(outPath, JSON.stringify(prs, null, 2));
-    console.log(`[${projectId}] Saved ${prs.length} PRs`);
-    return prs;
-  } catch (e) {
-    console.warn(`[${projectId}] Failed to fetch PRs: ${e}`);
-    return [];
-  }
 }
 
-function fetchIssues(projectId: ProjectId): IssueInfo[] {
-  console.log(`[${projectId}] Fetching issues...`);
-  const project = projects[projectId];
-  const outDir = path.join(CACHE_DIR, "issues");
-  ensureDir(outDir);
+function fetchPRReviewComments(
+  fullName: string,
+  prNumbers: number[],
+): PRReviewComment[] {
+  console.log(`  Fetching review comments for top ${prNumbers.length} PRs...`);
+  const comments: PRReviewComment[] = [];
 
-  try {
-    const raw = execSync(
-      `gh issue list --repo ${project.repo} --state all --limit ${limits.maxIssues} --json number,title,body,labels,createdAt,closedAt`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
-    const issues: IssueInfo[] = JSON.parse(raw).map((issue: any) => ({
-      number: issue.number,
-      title: issue.title,
-      body: issue.body || "",
-      labels: (issue.labels || []).map((l: any) => l.name),
-      createdAt: issue.createdAt,
-      closedAt: issue.closedAt,
-    }));
-
-    const outPath = path.join(outDir, `${projectId}.json`);
-    fs.writeFileSync(outPath, JSON.stringify(issues, null, 2));
-    console.log(`[${projectId}] Saved ${issues.length} issues`);
-    return issues;
-  } catch (e) {
-    console.warn(`[${projectId}] Failed to fetch issues: ${e}`);
-    return [];
+  for (const num of prNumbers.slice(0, 20)) {
+    try {
+      const json = ghCli(
+        `api repos/${fullName}/pulls/${num}/reviews --jq '[.[] | {author: .user.login, body: .body, createdAt: .submitted_at}]'`,
+      );
+      const reviews = JSON.parse(json || "[]");
+      for (const r of reviews) {
+        if (r.body && r.body.trim()) {
+          comments.push({
+            prNumber: num,
+            author: r.author || "",
+            body: r.body.slice(0, 500),
+            createdAt: r.createdAt || "",
+          });
+        }
+      }
+    } catch {
+      // Skip PRs we can't fetch reviews for
+    }
   }
+
+  return comments;
 }
 
-function snapshotTree(projectId: ProjectId, repoDir: string) {
-  console.log(`[${projectId}] Snapshotting directory tree...`);
-  try {
-    const tree = execSync(
-      `find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' | head -500 | sort`,
-      { cwd: repoDir, encoding: "utf-8", timeout: 30000 },
-    );
-    const outPath = path.join(CACHE_DIR, "repos", projectId, ".tree.txt");
-    fs.writeFileSync(outPath, tree);
-    console.log(
-      `[${projectId}] Saved tree (${tree.split("\n").length} files)`,
-    );
-  } catch (e) {
-    console.warn(`[${projectId}] Failed to snapshot tree: ${e}`);
-  }
-}
-
-async function fetchProject(projectId: ProjectId) {
-  console.log(`\n=== Fetching ${projects[projectId].name} ===\n`);
-
-  const repoDir = await cloneOrPull(projectId);
-  await extractGitLog(projectId, repoDir);
-  fetchPRs(projectId);
-  fetchIssues(projectId);
-  snapshotTree(projectId, repoDir);
-
-  console.log(`\n=== Done: ${projects[projectId].name} ===\n`);
-}
-
-// CLI entry
-const targetProject = process.argv[2] as ProjectId | undefined;
-
-if (targetProject && projects[targetProject]) {
-  await fetchProject(targetProject);
-} else if (!targetProject) {
-  for (const id of PROJECT_IDS) {
-    await fetchProject(id);
-  }
-} else {
-  console.error(
-    `Unknown project: ${targetProject}. Available: ${PROJECT_IDS.join(", ")}`,
+function fetchIssues(fullName: string, maxIssues: number): IssueInfo[] {
+  console.log("  Fetching issues...");
+  const json = ghCli(
+    `issue list --repo ${fullName} --state all --limit ${maxIssues} --json number,title,body,labels,createdAt,closedAt`,
   );
-  process.exit(1);
+  const issues = JSON.parse(json);
+  return issues.map((issue: any) => ({
+    number: issue.number,
+    title: issue.title,
+    body: (issue.body || "").slice(0, 1000),
+    labels: (issue.labels || []).map((l: any) => l.name || l),
+    createdAt: issue.createdAt,
+    closedAt: issue.closedAt,
+  }));
+}
+
+function snapshotTree(repoDir: string): string {
+  try {
+    return execSync(
+      `find . -type f -not -path './.git/*' -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path '*/.cache/*' | head -500 | sort`,
+      { cwd: repoDir, encoding: "utf-8", timeout: 10_000 },
+    );
+  } catch {
+    return "";
+  }
+}
+
+export async function fetchRepo(
+  repo: RepoConfig,
+  config: Config,
+): Promise<void> {
+  const slug = repoSlug(repo.url);
+  const fullName = repoFullName(repo.url);
+  const rawDir = path.join(config.cacheDir, slug, "raw");
+  const repoDir = path.join(config.cacheDir, slug, "repo");
+  ensureDir(rawDir);
+
+  // Clone or pull
+  await cloneOrPull(repo.url, repoDir);
+
+  // Extract git log
+  console.log("  Extracting git log...");
+  const commits = await extractGitLog(repoDir, config.limits.maxCommits);
+  fs.writeFileSync(
+    path.join(rawDir, "git-log.json"),
+    JSON.stringify(commits, null, 2),
+  );
+  console.log(`  ${commits.length} commits`);
+
+  // Fetch merged PRs
+  const prs = fetchMergedPRs(fullName, config.limits.maxPRs);
+  fs.writeFileSync(
+    path.join(rawDir, "prs.json"),
+    JSON.stringify(prs, null, 2),
+  );
+  console.log(`  ${prs.length} merged PRs`);
+
+  // Fetch closed PRs (for pitfall layer)
+  const closedPRs = fetchClosedPRs(fullName);
+  fs.writeFileSync(
+    path.join(rawDir, "closed-prs.json"),
+    JSON.stringify(closedPRs, null, 2),
+  );
+  console.log(`  ${closedPRs.length} closed (not merged) PRs`);
+
+  // Fetch PR review comments (for decision/constraint layers)
+  const topPRs = prs
+    .sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions))
+    .slice(0, 20)
+    .map((p) => p.number);
+  const reviews = fetchPRReviewComments(fullName, topPRs);
+  fs.writeFileSync(
+    path.join(rawDir, "pr-reviews.json"),
+    JSON.stringify(reviews, null, 2),
+  );
+  console.log(`  ${reviews.length} review comments`);
+
+  // Fetch issues
+  const issues = fetchIssues(fullName, config.limits.maxIssues);
+  fs.writeFileSync(
+    path.join(rawDir, "issues.json"),
+    JSON.stringify(issues, null, 2),
+  );
+  console.log(`  ${issues.length} issues`);
+
+  // Directory tree
+  const tree = snapshotTree(repoDir);
+  fs.writeFileSync(path.join(rawDir, "tree.txt"), tree);
 }

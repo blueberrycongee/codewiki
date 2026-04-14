@@ -13,48 +13,33 @@ export interface ToolDefinition {
 const discoverTool: ToolDefinition = {
   name: "codewiki_discover",
   description:
-    "Browse the CodeWiki knowledge base to find relevant pages about coding agent patterns and architecture. " +
-    "Use this when you want to find references, learn about design patterns, or explore how open source coding agents work. " +
+    "Browse the CodeWiki knowledge base to find relevant pages. " +
     "Returns a list of matching wiki pages with summaries. " +
-    "Available projects: opencode, codex, openclaw. " +
-    "Available page kinds: architecture, mechanism, pattern, evolution, comparison, antipattern, decision.",
+    "Pages are organized into five layers: decision, evolution, constraint, pitfall, convention.",
   shape: {
     query: z
       .string()
       .optional()
-      .describe(
-        'Search query — matches against page titles, summaries, and topics. Examples: "tool dispatch", "context management", "agent loop". Leave empty to browse all pages.',
-      ),
-    project: z
-      .enum(["opencode", "codex", "openclaw"])
+      .describe("Search query. Leave empty to browse all pages."),
+    project: z.string().optional().describe("Filter by project/repo slug"),
+    layer: z
+      .string()
       .optional()
-      .describe("Filter by project"),
-    kind: z
-      .enum([
-        "architecture",
-        "mechanism",
-        "pattern",
-        "evolution",
-        "comparison",
-        "antipattern",
-        "decision",
-      ])
-      .optional()
-      .describe("Filter by page type"),
+      .describe("Filter by layer: decision, evolution, constraint, pitfall, convention"),
   },
   handler: (args) => {
     const query = (args.query as string) || "";
     const project = args.project as string | undefined;
-    const kind = args.kind as string | undefined;
+    const layer = args.layer as string | undefined;
 
-    const results = searchPages(query, { project, kind });
+    const results = searchPages(query, undefined, { project, layer });
 
     if (results.length === 0) {
       return {
         content: [
           {
             type: "text" as const,
-            text: `No pages found for query "${query}"${project ? ` in project ${project}` : ""}${kind ? ` of type ${kind}` : ""}. Try a broader query or remove filters.`,
+            text: `No pages found for query "${query}"${project ? ` in project ${project}` : ""}${layer ? ` layer ${layer}` : ""}. Try a broader query or remove filters.`,
           },
         ],
       };
@@ -63,7 +48,7 @@ const discoverTool: ToolDefinition = {
     const text = results
       .map(
         (page) =>
-          `- **${page.title}** (\`${page.id}\`)\n  Kind: ${page.kind} | Confidence: ${page.confidence} | Topic: ${page.topic}\n  ${page.summary}`,
+          `- **${page.title}** (\`${page.id}\`)\n  Layer: ${page.layer} | Confidence: ${page.confidence}\n  ${page.summary}`,
       )
       .join("\n\n");
 
@@ -81,14 +66,12 @@ const discoverTool: ToolDefinition = {
 const readTool: ToolDefinition = {
   name: "codewiki_read",
   description:
-    "Read a specific CodeWiki page in full. Returns the complete page content including architecture details, " +
-    "code references, source citations, and related pages. Use the page_id from codewiki_discover results.",
+    "Read a specific CodeWiki page in full. Returns the complete page content including " +
+    "code references, source citations, and related pages.",
   shape: {
     page_id: z
       .string()
-      .describe(
-        'The page ID to read, e.g. "opencode/architecture" or "comparisons/tool-execution-models"',
-      ),
+      .describe('The page ID to read, e.g. "opencode/decision" or "opencode/pitfall"'),
   },
   handler: (args) => {
     const pageId = args.page_id as string;
@@ -97,11 +80,7 @@ const readTool: ToolDefinition = {
     if (!page) {
       const allPages = listPages();
       const suggestions = allPages
-        .filter(
-          (p) =>
-            p.id.includes(pageId.split("/").pop() || "") ||
-            p.topic.includes(pageId.split("/").pop() || ""),
-        )
+        .filter((p) => p.id.includes(pageId.split("/").pop() || ""))
         .slice(0, 5);
 
       let text = `Page "${pageId}" not found.`;
@@ -115,9 +94,8 @@ const readTool: ToolDefinition = {
     const fm = page.frontmatter;
     const header = [
       `# ${fm.title}`,
-      `**ID:** ${fm.id} | **Kind:** ${fm.kind} | **Confidence:** ${fm.confidence}`,
+      `**ID:** ${fm.id} | **Layer:** ${fm.layer || fm.kind} | **Confidence:** ${fm.confidence}`,
       `**Project:** ${Array.isArray(fm.project) ? fm.project.join(", ") : fm.project}`,
-      `**Topic:** ${fm.topic}`,
       `**Compiled:** ${fm.compiled_at} | **Model:** ${fm.compiler_model}`,
       "",
     ].join("\n");
@@ -128,59 +106,33 @@ const readTool: ToolDefinition = {
   },
 };
 
-const compareTool: ToolDefinition = {
-  name: "codewiki_compare",
+const layersTool: ToolDefinition = {
+  name: "codewiki_layers",
   description:
-    "Get cross-project comparison on a specific topic. Shows how different coding agent projects " +
-    "(OpenCode, Codex, OpenClaw) approach the same problem differently. " +
-    "Topics include: architecture, tool execution, safety/sandboxing, conversation management, language tradeoffs.",
+    "Get an overview of all five knowledge layers for a project. " +
+    "Returns a summary of each layer: decision, evolution, constraint, pitfall, convention.",
   shape: {
-    topic: z
-      .string()
-      .describe(
-        'The topic to compare across projects, e.g. "tool execution", "architecture", "safety"',
-      ),
+    project: z.string().describe("The project/repo slug, e.g. 'opencode'"),
   },
   handler: (args) => {
-    const topic = (args.topic as string).toLowerCase();
+    const project = args.project as string;
+    const layers = ["decision", "evolution", "constraint", "pitfall", "convention"];
 
-    const comparisonPages = searchPages(topic, { kind: "comparison" });
-    if (comparisonPages.length > 0) {
-      const page = loadPage(comparisonPages[0].id);
+    const sections: string[] = [];
+    for (const layer of layers) {
+      const page = loadPage(`${project}/${layer}`);
       if (page) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# Comparison: ${comparisonPages[0].title}\n\n${page.content}`,
-            },
-          ],
-        };
+        sections.push(`## ${layer.toUpperCase()}\n${page.frontmatter.summary}`);
+      } else {
+        sections.push(`## ${layer.toUpperCase()}\n*Not compiled yet*`);
       }
-    }
-
-    const projectPages = searchPages(topic);
-    if (projectPages.length > 0) {
-      const sections = projectPages.map((p) => {
-        const full = loadPage(p.id);
-        return `## ${p.title} (${p.id})\n${full?.content || p.summary}`;
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `# Cross-project comparison: ${topic}\n\nNo dedicated comparison page found. Here are the relevant per-project pages:\n\n${sections.join("\n\n---\n\n")}`,
-          },
-        ],
-      };
     }
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `No pages found related to topic "${topic}". Available topics: architecture, tool execution, conversation management, safety/sandboxing, context management.`,
+          text: `# ${project} — Five Knowledge Layers\n\n${sections.join("\n\n")}\n\nUse codewiki_read to read any layer in full, e.g. codewiki_read("${project}/decision")`,
         },
       ],
     };
@@ -190,15 +142,10 @@ const compareTool: ToolDefinition = {
 const deepDiveTool: ToolDefinition = {
   name: "codewiki_deep_dive",
   description:
-    "Get detailed implementation specifics from a wiki page, focused on a particular question. " +
-    "Returns the most relevant section along with source links for verification.",
+    "Get detailed specifics from a wiki page, focused on a particular question.",
   shape: {
     page_id: z.string().describe("The page ID to dive into"),
-    question: z
-      .string()
-      .describe(
-        'The specific question to answer, e.g. "how does the permission system work?"',
-      ),
+    question: z.string().describe("The specific question to answer"),
   },
   handler: (args) => {
     const pageId = args.page_id as string;
@@ -213,7 +160,7 @@ const deepDiveTool: ToolDefinition = {
       };
     }
 
-    const sections = page.content.split(/^### /m).filter(Boolean);
+    const sections = page.content.split(/^## /m).filter(Boolean);
     const keywords = question.split(/\s+/).filter((w) => w.length > 2);
 
     const scored = sections.map((section) => {
@@ -222,26 +169,20 @@ const deepDiveTool: ToolDefinition = {
         (s, kw) => s + (lower.includes(kw) ? 1 : 0),
         0,
       );
-      return {
-        section: section.startsWith("## ") ? section : `### ${section}`,
-        score,
-      };
+      return { section: `## ${section}`, score };
     });
 
     scored.sort((a, b) => b.score - a.score);
     const relevant = scored.filter((s) => s.score > 0).slice(0, 3);
 
     const fm = page.frontmatter;
-    const sourcesText = fm.sources
-      .map((s) => `- [${s.type}: ${s.ref}](${s.url}) — ${s.relevance}`)
-      .join("\n");
 
     if (relevant.length === 0) {
       return {
         content: [
           {
             type: "text" as const,
-            text: `No sections in "${fm.title}" closely match your question. Here's the full page summary:\n\n${fm.summary}\n\n**Sources:**\n${sourcesText}`,
+            text: `No sections in "${fm.title}" closely match your question.\n\nSummary: ${fm.summary}`,
           },
         ],
       };
@@ -252,73 +193,44 @@ const deepDiveTool: ToolDefinition = {
       content: [
         {
           type: "text" as const,
-          text: `# Deep Dive: ${fm.title}\n**Question:** ${args.question}\n\n${text}\n\n---\n**Sources for verification:**\n${sourcesText}`,
+          text: `# Deep Dive: ${fm.title}\n**Question:** ${args.question}\n\n${text}`,
         },
       ],
     };
   },
 };
 
-const traceEvolutionTool: ToolDefinition = {
-  name: "codewiki_trace_evolution",
-  description:
-    "Show how a specific feature or pattern evolved over time in a project. " +
-    "Returns chronological narrative with commit links showing key architectural changes.",
+const searchTool: ToolDefinition = {
+  name: "codewiki_search",
+  description: "Full-text search across all wiki content.",
   shape: {
-    project: z
-      .enum(["opencode", "codex", "openclaw"])
-      .describe("The project to trace"),
-    topic: z
-      .string()
-      .describe(
-        'The feature/topic to trace, e.g. "tool system", "agent loop", "context management"',
-      ),
+    query: z.string().describe("Search query"),
+    project: z.string().optional().describe("Filter by project"),
+    layer: z.string().optional().describe("Filter by layer"),
   },
   handler: (args) => {
-    const project = args.project as string;
-    const topic = (args.topic as string).toLowerCase();
+    const query = args.query as string;
+    const project = args.project as string | undefined;
+    const layer = args.layer as string | undefined;
 
-    const evolutionPages = searchPages(topic, {
-      project,
-      kind: "evolution",
-    });
-
-    if (evolutionPages.length > 0) {
-      const page = loadPage(evolutionPages[0].id);
-      if (page) {
-        return {
-          content: [{ type: "text" as const, text: page.content }],
-        };
-      }
+    const results = searchPages(query, undefined, { project, layer });
+    if (results.length === 0) {
+      return {
+        content: [
+          { type: "text" as const, text: `No results for "${query}".` },
+        ],
+      };
     }
 
-    const archPage = loadPage(`${project}/architecture`);
-    if (archPage) {
-      const evolutionSection = archPage.content
-        .split(/^### /m)
-        .find(
-          (s) =>
-            s.toLowerCase().includes("演进") ||
-            s.toLowerCase().includes("evolution"),
-        );
-
-      if (evolutionSection) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# Evolution: ${topic} in ${project}\n\n### ${evolutionSection}\n\n*Extracted from architecture page. For full context, read \`${project}/architecture\`.*`,
-            },
-          ],
-        };
-      }
-    }
+    const text = results
+      .map((p) => `- **${p.title}** (\`${p.id}\`) — ${p.summary}`)
+      .join("\n");
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `No evolution data found for "${topic}" in ${project}. Try codewiki_read with "${project}/architecture" for an overview that may include evolution notes.`,
+          text: `Found ${results.length} result(s) for "${query}":\n\n${text}`,
         },
       ],
     };
@@ -328,7 +240,7 @@ const traceEvolutionTool: ToolDefinition = {
 export const allTools: ToolDefinition[] = [
   discoverTool,
   readTool,
-  compareTool,
+  layersTool,
   deepDiveTool,
-  traceEvolutionTool,
+  searchTool,
 ];

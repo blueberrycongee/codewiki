@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CONTENT_DIR } from "../config.js";
 import { frontmatterSchema, type Frontmatter } from "./schema.js";
 
 export interface WikiPage {
@@ -19,7 +18,6 @@ function parseFrontmatter(raw: string): {
   const yamlBlock = match[1];
   const content = match[2];
 
-  // Simple YAML parser for our flat-ish frontmatter
   const frontmatter: Record<string, unknown> = {};
   let currentKey = "";
   let currentArray: unknown[] | null = null;
@@ -34,37 +32,24 @@ function parseFrontmatter(raw: string): {
       const [, key, value] = keyMatch;
       currentKey = key;
 
-      // Array on same line: [a, b, c]
       if (value.startsWith("[") && value.endsWith("]")) {
         frontmatter[key] = value
           .slice(1, -1)
           .split(",")
           .map((s) => s.trim().replace(/^["']|["']$/g, ""));
-      }
-      // String value
-      else if (value.startsWith('"') && value.endsWith('"')) {
+      } else if (value.startsWith('"') && value.endsWith('"')) {
         frontmatter[key] = value.slice(1, -1);
-      }
-      // Bare value
-      else if (value.trim()) {
+      } else if (value.trim()) {
         frontmatter[key] = value.trim();
-      }
-      // Empty = start of array or object
-      else {
+      } else {
         currentArray = [];
       }
     } else if (currentArray !== null) {
       const arrayItemMatch = line.match(/^\s+-\s+(.*)/);
       if (arrayItemMatch) {
         const val = arrayItemMatch[1].trim();
-        // Check if it's a source object (has type: prefix)
-        if (val.startsWith("type:")) {
-          // This is a new source object, parse inline
-          // But sources use multi-line YAML, handle below
-        }
         currentArray.push(val.replace(/^["']|["']$/g, ""));
       }
-      // Nested object in array (like sources)
       const nestedMatch = line.match(/^\s{4,}(\w+)\s*:\s*(.*)/);
       if (nestedMatch) {
         const [, nKey, nVal] = nestedMatch;
@@ -75,7 +60,6 @@ function parseFrontmatter(raw: string): {
             .replace(/^["']|["']$/g, "");
         }
       }
-      // Start of new object in array
       if (line.match(/^\s{2}-\s+\w+:/)) {
         const objMatch = line.match(/^\s{2}-\s+(\w+)\s*:\s*(.*)/);
         if (objMatch) {
@@ -94,9 +78,20 @@ function parseFrontmatter(raw: string): {
   return { frontmatter, content };
 }
 
-export function loadPage(pageId: string): WikiPage | null {
-  // pageId like "opencode/architecture" → content/opencode/architecture.md
-  const filePath = path.join(CONTENT_DIR, `${pageId}.md`);
+// Default content dir for backward compat
+let _defaultContentDir: string | null = null;
+
+function resolveContentDir(contentDir?: string): string {
+  if (contentDir) return contentDir;
+  if (_defaultContentDir) return _defaultContentDir;
+  // Fallback: resolve from this file's location
+  const __dirname = path.dirname(new URL(import.meta.url).pathname);
+  return path.resolve(__dirname, "../../content");
+}
+
+export function loadPage(pageId: string, contentDir?: string): WikiPage | null {
+  const dir = resolveContentDir(contentDir);
+  const filePath = path.join(dir, `${pageId}.md`);
   if (!fs.existsSync(filePath)) return null;
 
   const raw = fs.readFileSync(filePath, "utf-8");
@@ -104,7 +99,6 @@ export function loadPage(pageId: string): WikiPage | null {
 
   const parsed = frontmatterSchema.safeParse(rawFm);
   if (!parsed.success) {
-    // Return with raw frontmatter even if validation fails, for robustness
     return {
       frontmatter: rawFm as unknown as Frontmatter,
       content,
@@ -119,56 +113,68 @@ export function loadPage(pageId: string): WikiPage | null {
   };
 }
 
-export function listPages(): Frontmatter[] {
-  const pages: Frontmatter[] = [];
+export interface PageSummary {
+  id: string;
+  title: string;
+  layer: string;
+  project: string | string[];
+  confidence: string;
+  summary: string;
+}
 
-  function scanDir(dir: string, prefix: string) {
-    if (!fs.existsSync(dir)) return;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+export function listPages(contentDir?: string): PageSummary[] {
+  const dir = resolveContentDir(contentDir);
+  const pages: PageSummary[] = [];
+
+  function scanDir(scanPath: string, prefix: string) {
+    if (!fs.existsSync(scanPath)) return;
+    const entries = fs.readdirSync(scanPath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        scanDir(path.join(dir, entry.name), `${prefix}${entry.name}/`);
+        scanDir(path.join(scanPath, entry.name), `${prefix}${entry.name}/`);
       } else if (entry.name.endsWith(".md") && !entry.name.startsWith("_")) {
         const pageId = `${prefix}${entry.name.replace(/\.md$/, "")}`;
-        const page = loadPage(pageId);
-        if (page) pages.push(page.frontmatter);
+        const page = loadPage(pageId, dir);
+        if (page) {
+          const fm = page.frontmatter;
+          pages.push({
+            id: fm.id || pageId,
+            title: fm.title || pageId,
+            layer: fm.layer || fm.kind || "unknown",
+            project: fm.project,
+            confidence: fm.confidence || "medium",
+            summary: fm.summary || "",
+          });
+        }
       }
     }
   }
 
-  scanDir(CONTENT_DIR, "");
+  scanDir(dir, "");
   return pages;
 }
 
-export function searchPages(query: string, filters?: {
-  project?: string;
-  kind?: string;
-}): Frontmatter[] {
-  const allPages = listPages();
+export function searchPages(
+  query: string,
+  contentDir?: string,
+  filters?: { project?: string; layer?: string },
+): PageSummary[] {
+  const allPages = listPages(contentDir);
   const q = query.toLowerCase();
 
   return allPages.filter((page) => {
-    // Apply filters
     if (filters?.project) {
       const projects = Array.isArray(page.project)
         ? page.project
         : [page.project];
       if (!projects.includes(filters.project)) return false;
     }
-    if (filters?.kind && page.kind !== filters.kind) return false;
+    if (filters?.layer && page.layer !== filters.layer) return false;
 
-    // If no query, return all matching filters
     if (!q) return true;
 
-    // Search by individual keywords for fuzzy matching
-    // "tool execution" should match "tool-execution-models"
     const keywords = q.split(/[\s\-_/]+/).filter((w) => w.length > 1);
-    const searchText = [
-      page.title,
-      page.summary,
-      page.topic,
-      page.id,
-    ]
+    const searchText = [page.title, page.summary, page.id]
       .join(" ")
       .toLowerCase();
 

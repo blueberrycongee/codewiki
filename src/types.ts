@@ -52,12 +52,3 @@ export interface ExtractedFact {
   confidence: "high" | "medium" | "low";
   relevance: string;
 }
-
-export interface CostRecord {
-  stage: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  estimatedCost: number;
-  timestamp: string;
-}

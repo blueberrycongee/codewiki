@@ -22,7 +22,6 @@ import {
   makeComposePagePrompt,
   makeComparisonPagePrompt,
 } from "./prompts.js";
-import { estimateCost, logCost, printCostSummary } from "./cost.js";
 
 const client = new Anthropic();
 
@@ -299,19 +298,6 @@ async function extractFacts(
     ],
   });
 
-  logCost({
-    stage: `extract-facts/${projectId}/${pageDef.topic}`,
-    model: models.compile,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    estimatedCost: estimateCost(
-      models.compile,
-      response.usage.input_tokens,
-      response.usage.output_tokens,
-    ),
-    timestamp: new Date().toISOString(),
-  });
-
   const text =
     response.content[0].type === "text" ? response.content[0].text : "";
 
@@ -358,19 +344,6 @@ async function composePage(
         content: `${systemPrompt}\n\n--- EXTRACTED FACTS (${facts.length}) ---\n\n${factsText}`,
       },
     ],
-  });
-
-  logCost({
-    stage: `compose-page/${projectId}/${pageDef.topic}`,
-    model: models.compile,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    estimatedCost: estimateCost(
-      models.compile,
-      response.usage.input_tokens,
-      response.usage.output_tokens,
-    ),
-    timestamp: new Date().toISOString(),
   });
 
   return response.content[0].type === "text"
@@ -544,19 +517,6 @@ async function compileComparisonPage(
     ],
   });
 
-  logCost({
-    stage: `compose-comparison/${compDef.topic}`,
-    model: models.compile,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    estimatedCost: estimateCost(
-      models.compile,
-      response.usage.input_tokens,
-      response.usage.output_tokens,
-    ),
-    timestamp: new Date().toISOString(),
-  });
-
   const content =
     response.content[0].type === "text" ? response.content[0].text : "";
 
@@ -639,7 +599,6 @@ async function main() {
 
   if (targetProject === "index") {
     await generateIndex();
-    printCostSummary();
     return;
   }
 
@@ -648,7 +607,6 @@ async function main() {
       await compileComparisonPage(compDef);
     }
     await generateIndex();
-    printCostSummary();
     return;
   }
 
@@ -658,7 +616,6 @@ async function main() {
       await compileProjectPage(targetProject as ProjectId, pageDef);
     }
     await generateIndex();
-    printCostSummary();
     return;
   }
 
@@ -676,7 +633,6 @@ async function main() {
   }
 
   await generateIndex();
-  printCostSummary();
 }
 
 main().catch(console.error);

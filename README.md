@@ -1,5 +1,7 @@
 # CodeWiki
 
+> **⚠️ 架构持续演进中** — 当前架构是早期 MVP，随时可能发生大规模重构。请勿将现有架构视为最终设计。
+
 LLM 编译的代码知识库 —— 分析开源 coding agent 项目的架构、设计决策和演进历史，通过 MCP 提供给你的 AI 助手使用。
 
 > 灵感来自 [Karpathy 的 LLM Wiki 模式](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：知识应该被编译一次、持续更新，而不是每次查询时重新推导。
@@ -107,9 +109,9 @@ npm run serve
 codewiki/
 ├── src/
 │   ├── pipeline/          # 数据管道
-│   │   ├── fetch.ts       #   拉取 git log, PR, issue（零 LLM 成本）
-│   │   ├── filter.ts      #   Haiku 打分过滤高价值内容（~$0.03）
-│   │   └── compile.ts     #   Sonnet 两阶段编译（~$15-30）
+│   │   ├── fetch.ts       #   拉取 git log, PR, issue
+│   │   ├── filter.ts      #   Haiku 打分过滤高价值内容
+│   │   └── compile.ts     #   Sonnet 两阶段编译
 │   ├── wiki/              # Wiki 内容层
 │   │   ├── schema.ts      #   页面结构定义（Zod）
 │   │   └── index.ts       #   搜索/读取
@@ -123,10 +125,10 @@ codewiki/
 ### 编译管道
 
 ```
-Stage 1: Fetch（免费）
+Stage 1: Fetch
   克隆仓库 → 提取 git log → 拉取 PR/issue
 
-Stage 2: Filter（Haiku，极低成本）
+Stage 2: Filter（Haiku）
   批量对 commit/PR 打分 → 筛选高价值内容（score >= 7）
 
 Stage 3: Compile（Sonnet，两阶段）

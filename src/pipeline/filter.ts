@@ -12,7 +12,6 @@ import {
 } from "../config.js";
 import type { CommitInfo, PRInfo, ScoredCommit, ScoredPR } from "../types.js";
 import { FILTER_COMMITS_PROMPT, FILTER_PRS_PROMPT } from "./prompts.js";
-import { estimateCost, logCost } from "./cost.js";
 
 const client = new Anthropic();
 
@@ -72,18 +71,6 @@ async function filterCommits(
         allScored.push(...scored);
       }
 
-      logCost({
-        stage: "filter-commits",
-        model: models.filter,
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        estimatedCost: estimateCost(
-          models.filter,
-          response.usage.input_tokens,
-          response.usage.output_tokens,
-        ),
-        timestamp: new Date().toISOString(),
-      });
     } catch (e) {
       console.error(`  Batch ${batchNum} failed: ${e}`);
     }
@@ -138,18 +125,6 @@ async function filterPRs(projectId: ProjectId): Promise<ScoredPR[]> {
         allScored.push(...scored);
       }
 
-      logCost({
-        stage: "filter-prs",
-        model: models.filter,
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        estimatedCost: estimateCost(
-          models.filter,
-          response.usage.input_tokens,
-          response.usage.output_tokens,
-        ),
-        timestamp: new Date().toISOString(),
-      });
     } catch (e) {
       console.error(`  Batch ${batchNum} failed: ${e}`);
     }
